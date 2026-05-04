@@ -23,7 +23,9 @@ type EventBus struct {
 // Inicializa a conexão com o barramento de eventos
 func setupEventBus() *EventBus {
 	// Em produção (Docker), use: amqp://admin:admin@barramento-de-eventos:5672/
-	conn, err := amqp.Dial("amqp://admin:admin@localhost:5672/")
+	// conn, err := amqp.Dial("amqp://admin:admin@localhost:5672/")
+	conn, err := amqp.Dial("amqp://admin:admin@barramento-de-eventos:5672/")
+
 	if err != nil {
 		log.Fatalf("Falha ao conectar no RabbitMQ: %v", err)
 	}
@@ -79,8 +81,8 @@ func main() {
 
 	// 2. Configura o MQTT
 	opts := mqtt.NewClientOptions()
-	opts.AddBroker("tcp://localhost:1883")
-	opts.SetClientID("smartfarm_ingestor_go")
+	opts.AddBroker("tcp://mqtt-broker:1883")
+	opts.SetClientID("mqtt-sub")
 	opts.SetUsername("sensor")
 	opts.SetPassword("123")
 	opts.SetCleanSession(false)

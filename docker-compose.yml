@@ -1,0 +1,14 @@
+services:
+  mqtt-sub:
+    build: .
+    container_name: mqtt-sub
+    restart: always
+    depends_on:
+      - mqtt-broker
+      - barramento-de-eventos
+    networks:
+      - smartfarm-network
+      
+networks:
+  smartfarm-network:
+    external: true
