@@ -9,6 +9,7 @@ import (
 	"time"
 	"context"
 	"strings"
+	"encoding/json"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -19,6 +20,13 @@ type EventBus struct {
 	conn    *amqp.Connection
 	channel *amqp.Channel
 	// queue   amqp.Queue removi pois a definição vai ser dinamica
+}
+
+type CustomPayload struct {
+	FazendaID 	string      `json:"fazendaId"`
+	DeviceType 	string      `json:"deviceType"`
+	DeviceID  	string      `json:"deviceId"`
+	Payload   	interface{} `json:"payload"`
 }
 
 // Inicializa a conexão com o barramento de eventos // LEMBRAR DE MUDAR O NOME DO CONTAINER PARA CADA CASO DE DEPLOY!!!!
@@ -82,6 +90,18 @@ func (eb *EventBus) publishToBus(payload []byte, nomeDaFila string) {
 			Timestamp:   time.Now(),
 		})
 
+
+	err = eb.channel.PublishWithContext(ctx,
+		"",            // exchange
+		"fila_influx", // routing key (nome da fila)
+		false,
+		false,
+		amqp.Publishing{
+			ContentType: "application/json",
+			Body:        payload,
+			Timestamp:   time.Now(),
+		})
+
 	if err != nil {
 		log.Printf("Erro ao publicar no barramento: %v", err)
 	} else {
@@ -105,19 +125,36 @@ func main() {
 
 	opts.OnConnect = func(c mqtt.Client) {
 		fmt.Println("Ingestor conectado ao Broker MQTT")
+
+		// topico onde apenas temos devices do tipo 'sensor'
 		c.Subscribe("campo/+/sensor/+/dados", 1, func(client mqtt.Client, msg mqtt.Message) {
 			fmt.Printf("\nMQTT Recebido: %s\nTópico: %s", string(msg.Payload()), msg.Topic())
 			topic := msg.Topic()
         	parts := strings.Split(topic, "/")
         
 			if len(parts) >= 4 {
-				campoId := parts[1] // campoId presente no tópico (nome da fazenda/ id da fazenda/ do usuario)
+				campoId := parts[1] // campoId tá no tópico (nome da fazenda/ id da fazenda/ do usuario)
+				deviceType := parts[2] // tipo do dispositivo (sensor)
+				deviceId := parts[3] // id do dispositivo (sensor01, sensor02, etc)
 				nomeFila := fmt.Sprintf("fila_%s", campoId)
 				
 				fmt.Printf("\n[MQTT] Processando Sensor: %s", campoId)
-				
+
+				custom := CustomPayload{
+					FazendaID: campoId,
+					DeviceType: deviceType,
+					DeviceID: deviceId,
+					Payload: string(msg.Payload()), // ou json.RawMessage(msg.Payload()) se já for JSON
+				}
+
+				jsonPayload, err := json.Marshal(custom)
+				if err != nil {
+					log.Printf("Erro ao serializar payload: %v", err)
+					return
+				}
+
 				// Publica na fila específica do dispositivo
-				bus.publishToBus(msg.Payload(), nomeFila)
+				bus.publishToBus(jsonPayload, nomeFila)
 			}
 		})
 	}
