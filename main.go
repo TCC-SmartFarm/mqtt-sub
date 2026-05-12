@@ -23,10 +23,10 @@ type EventBus struct {
 }
 
 type CustomPayload struct {
-	FazendaID 	string      `json:"fazendaId"`
-	DeviceType 	string      `json:"deviceType"`
-	DeviceID  	string      `json:"deviceId"`
-	Payload   	interface{} `json:"payload"`
+	UserId     string      `json:"userId"`
+	DeviceType string      `json:"deviceType"`
+	DeviceId   string      `json:"deviceId"`
+	Payload    interface{} `json:"payload"`
 }
 
 // Inicializa a conexão com o barramento de eventos // LEMBRAR DE MUDAR O NOME DO CONTAINER PARA CADA CASO DE DEPLOY!!!!
@@ -35,7 +35,7 @@ func setupEventBus() *EventBus {
 	// "amqp://admin:admin@localhost:5672/"
 	var conn *amqp.Connection
     var err error
-    url := "amqp://admin:admin@dev-barramento-de-eventos:5672/" 
+    url := "amqp://admin:admin@barramento-de-eventos:5672/" 
 
     // Tenta conectar 5 vezes antes de desistir
     for i := 1; i <= 5; i++ {
@@ -117,7 +117,7 @@ func main() {
 
 	// 2. Configura o MQTT
 	opts := mqtt.NewClientOptions()
-	opts.AddBroker("tcp://dev-mqtt-broker:1883")
+	opts.AddBroker("tcp://mqtt-broker:1883")
 	opts.SetClientID("mqtt-sub")
 	opts.SetUsername("mqtt_sub")
 	opts.SetPassword("mqtt_sub")
@@ -127,23 +127,23 @@ func main() {
 		fmt.Println("Ingestor conectado ao Broker MQTT")
 
 		// topico onde apenas temos devices do tipo 'sensor'
-		c.Subscribe("campo/+/sensor/+/dados", 1, func(client mqtt.Client, msg mqtt.Message) {
+		c.Subscribe("userId/+/sensor/+/dados", 1, func(client mqtt.Client, msg mqtt.Message) {
 			fmt.Printf("\nMQTT Recebido: %s\nTópico: %s", string(msg.Payload()), msg.Topic())
 			topic := msg.Topic()
         	parts := strings.Split(topic, "/")
         
 			if len(parts) >= 4 {
-				campoId := parts[1] // campoId tá no tópico (nome da fazenda/ id da fazenda/ do usuario)
+				userId := parts[1] // userId tá no tópico (nome da fazenda/ id da fazenda/ do usuario)
 				deviceType := parts[2] // tipo do dispositivo (sensor)
 				deviceId := parts[3] // id do dispositivo (sensor01, sensor02, etc)
-				nomeFila := fmt.Sprintf("fila_%s", campoId)
+				nomeFila := fmt.Sprintf("fila_%s", userId)
 				
-				fmt.Printf("\n[MQTT] Processando Sensor: %s", campoId)
+				fmt.Printf("\n[MQTT] Processando Sensor: %s", userId)
 
 				custom := CustomPayload{
-					FazendaID: campoId,
+					UserId:    userId,
 					DeviceType: deviceType,
-					DeviceID: deviceId,
+					DeviceId: deviceId,
 					Payload: string(msg.Payload()), // ou json.RawMessage(msg.Payload()) se já for JSON
 				}
 
