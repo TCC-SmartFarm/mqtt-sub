@@ -21,4 +21,4 @@ O serviço se conecta ao Broker utilizando credenciais de segurança e uma Sess�
 A ideia central deste módulo é não processar o dado diretamente. Em vez de salvar no banco de dados imediatamente, o Ingestor "empurra" a mensagem para uma fila no RabbitMQ.
 
 #### Por que o Barramento? 
-Isso evita gargalos no banco de dados MongoDB durante picos de transmissão e permite que múltiplos serviços (como o sistema de alertas e o módulo de séries temporais) consumam o mesmo dado simultaneamente.
+Isso evita gargalos no banco de dados durante picos de transmissão e permite que múltiplos serviços (como o sistema de alertas e o módulo de séries temporais) consumam o mesmo dado simultaneamente.
