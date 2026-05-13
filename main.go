@@ -144,7 +144,7 @@ func main() {
 					UserId:    userId,
 					DeviceType: deviceType,
 					DeviceId: deviceId,
-					Payload: string(msg.Payload()), // ou json.RawMessage(msg.Payload()) se já for JSON
+					Payload: json.RawMessage(msg.Payload()), // ou string(msg.Payload()) se não for JSON válido
 				}
 
 				jsonPayload, err := json.Marshal(custom)
