@@ -44,7 +44,7 @@ func setupEventBus() *EventBus {
         if err == nil {
             break
         }
-        log.Printf("Aguardando RabbitMQ iniciar... %v", err)
+        log.Printf("Aguardando RabbitMQ iniciar.%v", err)
         time.Sleep(5 * time.Second) // Espera 5 segundos para a próxima tentativa
     }
 
@@ -61,12 +61,19 @@ func setupEventBus() *EventBus {
     return &EventBus{conn: conn, channel: ch}
 }
 
-func (eb *EventBus) publishToBus(payload []byte, nomeDaFila string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+func (eb *EventBus) publishToBus(payload []byte, userId string, deviceType string, deviceId string) {
+    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
 
-	// Garante que a fila existe antes de enviar
-    _, err := eb.channel.QueueDeclare(
+    // O padrão de roteamento que o Cache-Service espera (sensor.#)
+    // Exemplo: sensor.fazenda2.7894567
+    routingKey := fmt.Sprintf("%s.%s.%s", deviceType, userId, deviceId)	
+	nomeDaFila := fmt.Sprintf("%s.%s.%s", deviceType, userId, deviceId)
+
+
+	// fila específica para o dispositivo (opcional, mas pode ser útil para casos de uso específicos)
+	//padrão de fila que eu usava antes
+	_, err := eb.channel.QueueDeclare(
         nomeDaFila, // Agora usamos o nome passado por parâmetro
         true,       // Durável
         false,
@@ -89,24 +96,42 @@ func (eb *EventBus) publishToBus(payload []byte, nomeDaFila string) {
 			Body:        payload,
 			Timestamp:   time.Now(),
 		})
+	/////////////////////
 
+    // Publicação para o Ecossistema (Cache e outros que usem a exchange)
+    err = eb.channel.PublishWithContext(ctx,
+        "telemetria_exchange", // Exchange
+        routingKey,            // Etiqueta: sensor.userId.deviceId
+        false,
+        false,
+        amqp.Publishing{
+            ContentType: "application/json",
+            Body:        payload,
+            Timestamp:   time.Now(),
+        })
 
-	err = eb.channel.PublishWithContext(ctx,
-		"",            // exchange
-		"fila_influx", // routing key (nome da fila)
-		false,
-		false,
-		amqp.Publishing{
-			ContentType: "application/json",
-			Body:        payload,
-			Timestamp:   time.Now(),
-		})
+    if err != nil {
+        log.Printf("Erro ao publicar na telemetria_exchange: %v", err)
+    }
 
-	if err != nil {
-		log.Printf("Erro ao publicar no barramento: %v", err)
-	} else {
-		fmt.Printf("[EVENT BUS] Mensagem enviada para a fila: %s\n", nomeDaFila)
-	}
+    // Publicação para o Influx
+    // Mas o ideal no TCC é o Influx também ser um Subscriber da Exchange!
+    err = eb.channel.PublishWithContext(ctx,
+        "",              // Default Exchange
+        "fila_influx",   // Nome da fila direto
+        false,
+        false,
+        amqp.Publishing{
+            ContentType: "application/json",
+            Body:        payload,
+            Timestamp:   time.Now(),
+        })
+
+    if err != nil {
+        log.Printf("Erro ao publicar para o Influx: %v", err)
+    } else {
+        fmt.Printf("[EVENT BUS] Mensagem roteada: %s\n", routingKey)
+    }
 }
 
 func main() {
@@ -136,7 +161,6 @@ func main() {
 				userId := parts[1] // userId tá no tópico (nome da fazenda/ id da fazenda/ do usuario)
 				deviceType := parts[2] // tipo do dispositivo (sensor)
 				deviceId := parts[3] // id do dispositivo (sensor01, sensor02, etc)
-				nomeFila := fmt.Sprintf("fila_%s", userId)
 				
 				fmt.Printf("\n[MQTT] Processando Sensor: %s", userId)
 
@@ -154,7 +178,7 @@ func main() {
 				}
 
 				// Publica na fila específica do dispositivo
-				bus.publishToBus(jsonPayload, nomeFila)
+				bus.publishToBus(jsonPayload, userId, deviceType, deviceId)
 			}
 		})
 	}
