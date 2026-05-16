@@ -68,38 +68,9 @@ func (eb *EventBus) publishToBus(payload []byte, userId string, deviceType strin
     // O padrão de roteamento que o Cache-Service espera (sensor.#)
     // Exemplo: sensor.fazenda2.7894567
     routingKey := fmt.Sprintf("%s.%s.%s", deviceType, userId, deviceId)	
-	nomeDaFila := fmt.Sprintf("%s.%s.%s", deviceType, userId, deviceId)
-
-
-	// fila específica para o dispositivo (opcional, mas pode ser útil para casos de uso específicos)
-	//padrão de fila que eu usava antes
-	_, err := eb.channel.QueueDeclare(
-        nomeDaFila, // Agora usamos o nome passado por parâmetro
-        true,       // Durável
-        false,
-        false,
-        false,
-        nil,
-    )
-    if err != nil {
-        log.Printf("Erro ao declarar fila: %v", err)
-        return
-    }
-
-	err = eb.channel.PublishWithContext(ctx,
-		"",            // exchange
-		nomeDaFila, // routing key (nome da fila)
-		false,
-		false,
-		amqp.Publishing{
-			ContentType: "application/json",
-			Body:        payload,
-			Timestamp:   time.Now(),
-		})
-	/////////////////////
 
     // Publicação para o Ecossistema (Cache e outros que usem a exchange)
-    err = eb.channel.PublishWithContext(ctx,
+    err := eb.channel.PublishWithContext(ctx,
         "telemetria_exchange", // Exchange
         routingKey,            // Etiqueta: sensor.userId.deviceId
         false,
