@@ -26,6 +26,7 @@ type CustomPayload struct {
 	UserId     string      `json:"userId"`
 	DeviceType string      `json:"deviceType"`
 	DeviceId   string      `json:"deviceId"`
+	Name 	   string      `json:"name"` 
 	Payload    interface{} `json:"payload"`
 }
 
@@ -133,12 +134,22 @@ func main() {
 				deviceType := parts[2] // tipo do dispositivo (sensor)
 				deviceId := parts[3] // id do dispositivo (sensor01, sensor02, etc)
 				
-				fmt.Printf("\n[MQTT] Processando Sensor: %s", userId)
+				name := "unknown"
+				var payloadMap map[string]interface{}
+				if err := json.Unmarshal(msg.Payload(), &payloadMap); err == nil {
+					if n, ok := payloadMap["name"].(string); ok {
+						name = n
+					}
+				}
+
+				
+				fmt.Printf("\n[MQTT] Processando Sensor(%s): %s", name, userId)
 
 				custom := CustomPayload{
 					UserId:    userId,
 					DeviceType: deviceType,
 					DeviceId: deviceId,
+					Name: name,
 					Payload: json.RawMessage(msg.Payload()), // ou string(msg.Payload()) se não for JSON válido
 				}
 
