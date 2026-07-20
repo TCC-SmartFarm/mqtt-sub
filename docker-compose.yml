@@ -3,6 +3,8 @@ services:
     build: .
     container_name: mqtt-sub
     restart: always
+    env_file:
+      - ./.env
     depends_on:
       - mqtt-broker
       - barramento-de-eventos

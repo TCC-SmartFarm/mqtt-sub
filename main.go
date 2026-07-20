@@ -14,6 +14,8 @@ import (
 	// "encoding/hex"
 	"encoding/base64"
 
+	"github.com/supabase-community/supabase-go"
+
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -26,12 +28,13 @@ type EventBus struct {
 }
 
 type CustomPayload struct {
-	ApplicationId     string      `json:"applicationId"`
-	DeviceType string      `json:"deviceType"`
-	DevAddr    string      `json:"devAddr"`
-	DevEUI     string      `json:"devEUI"`
-	Name       string      `json:"name"`
-	Payload    interface{} `json:"payload"`
+	UserId          string      `json:"userId"`
+	ApplicationId   string      `json:"applicationId"`
+	DeviceType      string      `json:"deviceType"`
+	DevAddr         string      `json:"devAddr"`
+	DevEUI          string      `json:"devEUI"`
+	Name            string      `json:"name"`
+	Payload         interface{} `json:"payload"`
 }
 
 type DecodedSensorData struct {
@@ -120,19 +123,19 @@ func setupEventBus() *EventBus {
     return &EventBus{conn: conn, channel: ch}
 }
 
-func (eb *EventBus) publishToBus(payload []byte, applicationId string, deviceType string, devEUI string) {
-	log.Printf("[EVENT BUS] Publicando para a Exchange: %s.%s.%s", deviceType, applicationId, devEUI)
+func (eb *EventBus) publishToBus(payload []byte, userId string, deviceType string, devEUI string) {
+	log.Printf("[EVENT BUS] Publicando para a Exchange: %s.%s.%s", deviceType, userId, devEUI)
     ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
     defer cancel()
 
     // O padrão de roteamento que o Cache-Service espera (device.#)
     // Exemplo: device.fazenda2.7894567
-    routingKey := fmt.Sprintf("%s.%s.%s", deviceType, applicationId, devEUI)
+    routingKey := fmt.Sprintf("%s.%s.%s", deviceType, userId, devEUI)
 
     // Publicação para o Ecossistema (Cache e outros que usem a exchange)
     err := eb.channel.PublishWithContext(ctx,
         "telemetria_exchange", // Exchange
-        routingKey,            // Etiqueta: device.applicationId.devEUI
+        routingKey,            // Etiqueta: device.userId.devEUI
         false,
         false,
         amqp.Publishing{
@@ -165,8 +168,39 @@ func (eb *EventBus) publishToBus(payload []byte, applicationId string, deviceTyp
     }
 }
 
+// passe o pool de conexão (db *sql.DB) como argumento. Isso salva muita memória e CPU!
+func findUserId(client *supabase.Client, devEUI string, devAddr string) (string, error) {
+	// Estrutura para receber o JSON de resposta da API
+	var results []struct {
+		UserId string `json:"userId"`
+	}
+
+	// Fazendo a requisição na API:
+	// SELECT userId FROM smartfarm_users WHERE devices CONTAINS {devEUI}
+	filterValue := fmt.Sprintf("{\"%s\":\"%s\"}", devEUI, devAddr) // Formato exigido para arrays no Postgres/PostgREST
+	
+	// Executa a query via API
+	_, err := client.From("users").
+		Select("userId", "exact", false).
+		Filter("devices", "cs", filterValue). // 'cs' significa 'contains'
+		ExecuteTo(&results)
+
+	if err != nil {
+		return "", fmt.Errorf("erro na requisição à API do Supabase: %v", err)
+	}
+
+	// Se o array voltar vazio, nenhum usuário é dono desse dispositivo
+	if len(results) == 0 {
+		return "", fmt.Errorf("nenhum produtor encontrado com o sensor: %s", devEUI)
+	}
+
+	// Retorna o UserId do primeiro usuário encontrado
+	return results[0].UserId, nil
+}
+
+
 func main() {
-	// // Configura o Barramento de Eventos
+	// Configura o Barramento de Eventos
 	bus := setupEventBus()
 	defer bus.conn.Close()
 	defer bus.channel.Close()
@@ -174,13 +208,30 @@ func main() {
 	// Configura o MQTT
 	opts := mqtt.NewClientOptions()
 	// opts.AddBroker("tcp://localhost:1883")
-	opts.AddBroker("tcp://mqtt-broker:1883")
-	// opts.AddBroker("tcp://networkserver2.maua.br:1883")
-	// opts.SetClientID("public_listener_" + fmt.Sprint(time.Now().Unix())) // se não pode dar erro de clientId duplicado
-	opts.SetClientID("public")
+	// opts.AddBroker("tcp://mqtt-broker:1883")
+	opts.AddBroker("tcp://networkserver2.maua.br:1883")
+	opts.SetClientID("public_listener_" + fmt.Sprint(time.Now().Unix())) // se não pode dar erro de clientId duplicado (só uso isso no networkserver)
+	// opts.SetClientID("public")
 	opts.SetUsername("public")
 	opts.SetPassword("public")
 	opts.SetCleanSession(false)
+
+	// supa / ou qlqr bdd
+	fmt.Println("Iniciando cliente do Supabase")
+	supabaseURL := os.Getenv("SUPABASE_URL")
+	supabaseKey := os.Getenv("SUPABASE_KEY")
+	
+	// se as variáveis estiverem vazias, o log avisa
+    if supabaseURL == "" || supabaseKey == "" {
+        log.Fatal("ERRO: SUPABASE_URL ou SUPABASE_KEY não configuradas nas variáveis de ambiente!")
+    }
+    
+    db, erro := supabase.NewClient(supabaseURL, supabaseKey, nil)
+    if erro != nil {
+        fmt.Printf("falha ao inicializar o cliente do Supabase: %v", erro)
+    }
+    fmt.Println("Cliente Supabase inicializado com sucesso!")
+
 
 	opts.OnConnect = func(c mqtt.Client) {
 		fmt.Println("Ingestor conectado ao Broker MQTT")
@@ -188,6 +239,7 @@ func main() {
 		// c.Subscribe("application/c914c505-9a26-4c4b-acf1-400fa51514a0/device/5e76ce4fd99eefe3/event/up", 1, func(client mqtt.Client, msg mqtt.Message) {
 		// c.Subscribe("application/c914c505-9a26-4c4b-acf1-400fa51514a0/device/+/event/up", 1, func(client mqtt.Client, msg mqtt.Message) {
 		c.Subscribe("application/c914c505-9a26-4c4b-acf1-400fa51514a0/device/+/event/up", 1, func(client mqtt.Client, msg mqtt.Message) {
+		// c.Subscribe("application/+/device/+/event/up", 1, func(client mqtt.Client, msg mqtt.Message) {
 
 			fmt.Printf("\nMQTT Recebido: %s\nTópico: %s\n\n", string(msg.Payload()), msg.Topic())
 			topic := msg.Topic()
@@ -221,6 +273,12 @@ func main() {
 					deviceName = devEUI
 				}
 
+				userId, err := findUserId(db,devEUI, devAddr)
+				if err != nil {
+					log.Printf("Erro ao buscar usuário para DevEUI (%s): %v", devEUI, err)
+					userId = applicationId // fallback para evitar falha completa
+				}
+
 				// Executa a decodificação da string Hexadecimal
 				decodedData, err := decodeChirpStackPayload(envelope.Data)
 				if err != nil {
@@ -232,6 +290,7 @@ func main() {
 				fmt.Printf("\n[MQTT] Processando Sensor(%s): %s", devAddr, applicationId)
 
 				custom := CustomPayload{
+					UserId: userId, // Aqui o UserId é o nome da fazenda (proveniente do postgrees)
 					ApplicationId: applicationId,
 					DeviceType: deviceType,
 					DevEUI: devEUI,
@@ -249,8 +308,8 @@ func main() {
 				fmt.Printf("\n[CHIRPSTACK PARSER] deviceName: %s | devEUI: %s | devAddr: %s | Temp: %.2f°C | Hum: %.2f%% | Soil: %.2f%% | Lum: %.2f%% | Bat: %.2f%% | Valid: %t\n", deviceName, devEUI, devAddr, decodedData.AirTemperature, decodedData.AirHumidity, decodedData.SoilMoisture, decodedData.Luminosity, decodedData.Battery, decodedData.Validity)
 
 				// Despacha o JSON completamente mastigado para o RabbitMQ
-				bus.publishToBus(jsonPayload, applicationId, deviceType, devEUI)
-				fmt.Printf("\n\n\nCustomPayload: %s\n", string(jsonPayload))
+				bus.publishToBus(jsonPayload, userId, deviceType, devEUI)
+				fmt.Printf("\n\n\nCustomPayload: %s\n FIM", string(jsonPayload))
 			}
 		})
 	}
