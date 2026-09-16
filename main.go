@@ -177,26 +177,22 @@ func findUserId(client *supabase.Client, devEUI string, devAddr string) (string,
 
 	// Fazendo a requisição na API:
 	// SELECT userId FROM smartfarm_users WHERE devices CONTAINS {devEUI}
-	filterValue := fmt.Sprintf("{\"%s\":\"%s\"}", devEUI, devAddr) // Formato exigido para arrays no Postgres/PostgREST
-	
-	// Executa a query via API
+	searchTerm := fmt.Sprintf("%%\"devEUI\": \"%s\"%%", devEUI) 
+
 	_, err := client.From("users").
 		Select("userId", "exact", false).
-		Filter("devices", "cs", filterValue). // 'cs' significa 'contains'
+		Filter("devices::text", "ilike", searchTerm). // Faz o cast da coluna JSON para texto e busca
 		ExecuteTo(&results)
 
 	if err != nil {
 		return "", fmt.Errorf("erro na requisição à API do Supabase: %v", err)
 	}
 
-	// Se o array voltar vazio, nenhum usuário é dono desse dispositivo
 	if len(results) == 0 {
 		return "", fmt.Errorf("nenhum produtor encontrado com o sensor: %s", devEUI)
 	}
 
-	// Retorna o UserId do primeiro usuário encontrado
 	return results[0].UserId, nil
-}
 
 
 func main() {
