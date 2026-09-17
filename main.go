@@ -195,6 +195,8 @@ func findUserId(client *supabase.Client, devEUI string, devAddr string) (string,
 	return results[0].UserId, nil
 
 
+}
+
 func main() {
 	// Configura o Barramento de Eventos
 	bus := setupEventBus()
