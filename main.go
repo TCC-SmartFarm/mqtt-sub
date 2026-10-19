@@ -27,7 +27,18 @@ type EventBus struct {
 	// queue   amqp.Queue removi pois a definição vai ser dinamica
 }
 
-type CustomPayload struct {
+// type CustomPayload struct {
+// 	UserId          string      `json:"userId"`
+// 	ApplicationId   string      `json:"applicationId"`
+// 	DeviceType      string      `json:"deviceType"`
+// 	DevAddr         string      `json:"devAddr"`
+// 	DevEUI          string      `json:"devEUI"`
+// 	Name            string      `json:"name"`
+// 	Payload         interface{} `json:"payload"`
+// }
+
+
+type UserPayload struct {
 	UserId          string      `json:"userId"`
 	ApplicationId   string      `json:"applicationId"`
 	DeviceType      string      `json:"deviceType"`
@@ -36,6 +47,20 @@ type CustomPayload struct {
 	Name            string      `json:"name"`
 	Payload         interface{} `json:"payload"`
 }
+
+
+
+type InfluxPayload struct {
+    FazendaId       string      `json:"fazendaId"`
+    ApplicationId   string      `json:"applicationId"`
+    DeviceType      string      `json:"deviceType"`
+    DevAddr         string      `json:"devAddr"`
+    DevEUI          string      `json:"devEUI"`
+    Name            string      `json:"name"`
+    Payload         interface{} `json:"payload"`
+}
+
+
 
 type DecodedSensorData struct {
 	Timestamp      int64   `json:"timestamp"`
@@ -123,14 +148,17 @@ func setupEventBus() *EventBus {
     return &EventBus{conn: conn, channel: ch}
 }
 
-func (eb *EventBus) publishToBus(payload []byte, userId string, deviceType string, devEUI string) {
+func (eb *EventBus) publishToUser(payload []byte, userId string, deviceType string, devEUI string) {
 	log.Printf("[EVENT BUS] Publicando para a Exchange: %s.%s.%s", deviceType, userId, devEUI)
     ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
     defer cancel()
 
-    // O padrão de roteamento que o Cache-Service espera (device.#)
-    // Exemplo: device.fazenda2.7894567
-    routingKey := fmt.Sprintf("%s.%s.%s", deviceType, userId, devEUI)
+	routingKey := fmt.Sprintf(
+        "%s.%s.%s",
+        deviceType,
+        userId,
+        devEUI,
+    )
 
     // Publicação para o Ecossistema (Cache e outros que usem a exchange)
     err := eb.channel.PublishWithContext(ctx,
@@ -146,11 +174,18 @@ func (eb *EventBus) publishToBus(payload []byte, userId string, deviceType strin
 
     if err != nil {
         log.Printf("Erro ao publicar na telemetria_exchange: %v", err)
+    } else {
+        fmt.Printf("[EVENT BUS] Mensagem roteada: %s\n", routingKey)
     }
+}
+
+func (eb *EventBus) publishToInflux(payload []byte) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+    defer cancel()
 
     // Publicação para o Influx
     // Mas o ideal no TCC é o Influx também ser um Subscriber da Exchange!
-    err = eb.channel.PublishWithContext(ctx,
+    err := eb.channel.PublishWithContext(ctx,
         "",              // Default Exchange
         "fila_influx",   // Nome da fila direto
         false,
@@ -164,38 +199,155 @@ func (eb *EventBus) publishToBus(payload []byte, userId string, deviceType strin
     if err != nil {
         log.Printf("Erro ao publicar para o Influx: %v", err)
     } else {
-        fmt.Printf("[EVENT BUS] Mensagem roteada: %s\n", routingKey)
+        fmt.Printf("[EVENT BUS] Mensagem roteada para o Influx\n")
     }
 }
 
-// passe o pool de conexão (db *sql.DB) como argumento. Isso salva muita memória e CPU!
-func findUserId(client *supabase.Client, devEUI string, devAddr string) (string, error) {
-	// Estrutura para receber o JSON de resposta da API
-	var results []struct {
-		UserId string `json:"userId"`
-	}
-
-	// Fazendo a requisição na API:
-	// SELECT userId FROM smartfarm_users WHERE devices CONTAINS {devEUI}
-	searchTerm := fmt.Sprintf("%%\"devEUI\": \"%s\"%%", devEUI) 
-
-	_, err := client.From("users").
-		Select("userId", "exact", false).
-		Filter("devices::text", "ilike", searchTerm). // Faz o cast da coluna JSON para texto e busca
-		ExecuteTo(&results)
-
-	if err != nil {
-		return "", fmt.Errorf("erro na requisição à API do Supabase: %v", err)
-	}
-
-	if len(results) == 0 {
-		return "", fmt.Errorf("nenhum produtor encontrado com o sensor: %s", devEUI)
-	}
-
-	return results[0].UserId, nil
 
 
+// func (eb *EventBus) publishToBus(payload []byte, userId string, deviceType string, devEUI string) {
+// 	log.Printf("[EVENT BUS] Publicando para a Exchange: %s.%s.%s", deviceType, userId, devEUI)
+//     ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+//     defer cancel()
+
+//     // O padrão de roteamento que o Cache-Service espera (device.#)
+//     // Exemplo: device.fazenda2.7894567
+//     routingKey := fmt.Sprintf("%s.%s.%s", deviceType, userId, devEUI)
+
+//     // Publicação para o Ecossistema (Cache e outros que usem a exchange)
+//     err := eb.channel.PublishWithContext(ctx,
+//         "telemetria_exchange", // Exchange
+//         routingKey,            // Etiqueta: device.userId.devEUI
+//         false,
+//         false,
+//         amqp.Publishing{
+//             ContentType: "application/json",
+//             Body:        payload,
+//             Timestamp:   time.Now(),
+//         })
+
+//     if err != nil {
+//         log.Printf("Erro ao publicar na telemetria_exchange: %v", err)
+//     }
+
+//     // Publicação para o Influx
+//     // Mas o ideal no TCC é o Influx também ser um Subscriber da Exchange!
+//     err = eb.channel.PublishWithContext(ctx,
+//         "",              // Default Exchange
+//         "fila_influx",   // Nome da fila direto
+//         false,
+//         false,
+//         amqp.Publishing{
+//             ContentType: "application/json",
+//             Body:        payload,
+//             Timestamp:   time.Now(),
+//         })
+
+//     if err != nil {
+//         log.Printf("Erro ao publicar para o Influx: %v", err)
+//     } else {
+//         fmt.Printf("[EVENT BUS] Mensagem roteada: %s\n", routingKey)
+//     }
+// }
+
+// // passe o pool de conexão (db *sql.DB) como argumento. Isso salva muita memória e CPU!
+// func findUserId(client *supabase.Client, devEUI string, devAddr string) (string, error) {
+// 	// Estrutura para receber o JSON de resposta da API
+// 	var results []struct {
+// 		UserId string `json:"userId"`
+// 	}
+
+// 	// Fazendo a requisição na API:
+// 	// SELECT userId FROM smartfarm_users WHERE devices CONTAINS {devEUI}
+// 	searchTerm := fmt.Sprintf("%%\"devEUI\": \"%s\"%%", devEUI) 
+
+// 	_, err := client.From("users").
+// 		Select("userId", "exact", false).
+// 		Filter("devices::text", "ilike", searchTerm). // Faz o cast da coluna JSON para texto e busca
+// 		ExecuteTo(&results)
+
+// 	if err != nil {
+// 		return "", fmt.Errorf("erro na requisição à API do Supabase: %v", err)
+// 	}
+
+// 	if len(results) == 0 {
+// 		return "", fmt.Errorf("nenhum produtor encontrado com o sensor: %s", devEUI)
+// 	}
+
+// 	return results[0].UserId, nil
+// }
+
+func findFazendaId(client *supabase.Client, devEUI string) (string, error) {
+    var farms []struct {
+        Id string `json:"id"`
+    }
+
+    searchTerm := fmt.Sprintf("%%\"devEUI\": \"%s\"%%", devEUI)
+
+    _, err := client.From("fazendas").
+        Select("id", "exact", false).
+        Filter("devices::text", "ilike", searchTerm).
+        ExecuteTo(&farms)
+
+    if err != nil {
+        return "", fmt.Errorf(
+            "erro ao buscar fazenda pelo DevEUI %s: %v",
+            devEUI,
+            err,
+        )
+    }
+
+    if len(farms) == 0 {
+        return "", fmt.Errorf(
+            "nenhuma fazenda encontrada para o sensor %s",
+            devEUI,
+        )
+    }
+
+    if len(farms) > 1 {
+        return "", fmt.Errorf(
+            "sensor %s está associado a mais de uma fazenda",
+            devEUI,
+        )
+    }
+
+    return farms[0].Id, nil
 }
+
+func findUserIdsByFazenda(client *supabase.Client, fazendaId string) ([]string, error) {
+    var results []struct {
+        UserId string `json:"user_id"`
+    }
+
+    _, err := client.From("fazenda_users").
+        Select("user_id", "exact", false).
+        Eq("fazenda_id", fazendaId).
+        ExecuteTo(&results)
+
+    if err != nil {
+        return nil, fmt.Errorf(
+            "erro ao buscar usuários da fazenda %s: %v",
+            fazendaId,
+            err,
+        )
+    }
+
+    if len(results) == 0 {
+        return nil, fmt.Errorf(
+            "nenhum usuário associado à fazenda %s",
+            fazendaId,
+        )
+    }
+
+    userIds := make([]string, 0, len(results))
+
+    for _, result := range results {
+        userIds = append(userIds, result.UserId)
+    }
+
+    return userIds, nil
+}
+
 
 func main() {
 	// Configura o Barramento de Eventos
@@ -271,11 +423,7 @@ func main() {
 					deviceName = devEUI
 				}
 
-				userId, err := findUserId(db,devEUI, devAddr)
-				if err != nil {
-					log.Printf("Erro ao buscar usuário para DevEUI (%s): %v", devEUI, err)
-					userId = applicationId // fallback para evitar falha completa
-				}
+
 
 				// Executa a decodificação da string Hexadecimal
 				decodedData, err := decodeChirpStackPayload(envelope.Data)
@@ -287,27 +435,120 @@ func main() {
 				fmt.Printf("\n[MQTT SUCESSO] Recebido de DevEUI: %s", devEUI)
 				fmt.Printf("\n[MQTT] Processando Sensor(%s): %s", devAddr, applicationId)
 
-				custom := CustomPayload{
-					UserId: userId, // Aqui o UserId é o nome da fazenda (proveniente do postgrees)
-					ApplicationId: applicationId,
-					DeviceType: deviceType,
-					DevEUI: devEUI,
-					DevAddr: devAddr,
-					Name: deviceName, // Nome do dispositivo (pode ser o DevEUI caso nao venha na msg)
-					Payload: decodedData, // Injeto o objeto ja estruturadao e mastigado para a sequencia
-				}
 
-				jsonPayload, err := json.Marshal(custom)
+				fazendaId, err := findFazendaId(db, devEUI)
 				if err != nil {
-					log.Printf("Erro ao serializar payload: %v", err)
+					log.Printf(
+						"Erro ao buscar fazenda para DevEUI (%s): %v",
+						devEUI,
+						err,
+					)
+					return
+				}
+				userIds, err := findUserIdsByFazenda(db, fazendaId)
+				if err != nil {
+					log.Printf(
+						"Erro ao buscar usuários da fazenda %s: %v",
+						fazendaId,
+						err,
+					)
 					return
 				}
 
-				fmt.Printf("\n[CHIRPSTACK PARSER] deviceName: %s | devEUI: %s | devAddr: %s | Temp: %.2f°C | Hum: %.2f%% | Soil: %.2f%% | Lum: %.2f%% | Bat: %.2f%% | Valid: %t\n", deviceName, devEUI, devAddr, decodedData.AirTemperature, decodedData.AirHumidity, decodedData.SoilMoisture, decodedData.Luminosity, decodedData.Battery, decodedData.Validity)
 
-				// Despacha o JSON completamente mastigado para o RabbitMQ
-				bus.publishToBus(jsonPayload, userId, deviceType, devEUI)
-				fmt.Printf("\n\n\nCustomPayload: %s\n FIM", string(jsonPayload))
+
+				// userId, err := findUserId(db,devEUI, devAddr)
+				// if err != nil {
+				// 	log.Printf("Erro ao buscar usuário para DevEUI (%s): %v", devEUI, err)
+				// 	// userId = applicationId // fallback para evitar falha completa
+				// 	log.Printf("Falha ao encontrar usuário para DevEUI (%s). Ignorando mensagem.", devEUI)
+				// 	return 
+				// }
+				
+				
+
+				// custom := CustomPayload{
+				// 	UserId: userId, // Aqui o UserId é o nome da fazenda (proveniente do postgrees)
+				// 	ApplicationId: applicationId,
+				// 	DeviceType: deviceType,
+				// 	DevEUI: devEUI,
+				// 	DevAddr: devAddr,
+				// 	Name: deviceName, // Nome do dispositivo (pode ser o DevEUI caso nao venha na msg)
+				// 	Payload: decodedData, // Injeto o objeto ja estruturadao e mastigado para a sequencia
+				// }
+
+				// jsonPayload, err := json.Marshal(custom)
+				// if err != nil {
+				// 	log.Printf("Erro ao serializar payload: %v", err)
+				// 	return
+				// }
+
+
+
+
+				// ==============================
+				// 1. ENVIO PARA OS USUÁRIOS
+				// ==============================
+
+				for _, userId := range userIds {
+
+					userPayload := UserPayload{
+						UserId:        userId,
+						FazendaId:     fazendaId,
+						ApplicationId: applicationId,
+						DeviceType:    deviceType,
+						DevAddr:       devAddr,
+						DevEUI:        devEUI,
+						Name:          deviceName,
+						Payload:       decodedData,
+					}
+
+					jsonPayload, err := json.Marshal(userPayload)
+
+					if err != nil {
+						log.Printf(
+							"Erro ao serializar payload do usuário %s: %v",
+							userId,
+							err,
+						)
+						continue
+					}
+
+					bus.publishToUser(
+						jsonPayload,
+						userId,
+						deviceType,
+						devEUI,
+					)
+				}
+
+
+				// ==============================
+				// 2. ENVIO PARA O INFLUX
+				// ==============================
+
+				influxPayload := InfluxPayload{
+					FazendaId:     fazendaId,
+					ApplicationId: applicationId,
+					DeviceType:    deviceType,
+					DevAddr:       devAddr,
+					DevEUI:        devEUI,
+					Name:          deviceName,
+					Payload:       decodedData,
+				}
+
+				influxJSON, err := json.Marshal(influxPayload)
+
+				if err != nil {
+					log.Printf(
+						"Erro ao serializar payload do Influx: %v",
+						err,
+					)
+					return
+				}
+
+				bus.publishToInflux(influxJSON)
+								
 			}
 		})
 	}
