@@ -174,22 +174,41 @@ func findUserId(client *supabase.Client, devEUI string, devAddr string) (string,
 	var results []struct {
 		UserId string `json:"userId"`
 	}
+	devEUI = strings.TrimSpace(devEUI)
+	if devEUI == "" {
+		return "", fmt.Errorf("DevEUI vazio")
+	}
 
-	// Fazendo a requisição na API:
-	// SELECT userId FROM smartfarm_users WHERE devices CONTAINS {devEUI}
-	searchTerm := fmt.Sprintf("%%\"devEUI\": \"%s\"%%", devEUI) 
+	// O filtro precisa corresponder à estrutura JSON armazenada.
+	// Exemplo: [{"devEUI":"5e76ce4fd99eefe3"}]
+	filterJSON, err := json.Marshal([]map[string]string{
+		{"devEUI": devEUI},
+	})
+	if err != nil {
+		return "", fmt.Errorf("erro ao montar filtro do dispositivo: %w", err)
+	}
 
-	_, err := client.From("users").
+	_, err = client.From("users").
 		Select("userId", "exact", false).
-		Filter("devices::text", "ilike", searchTerm). // Faz o cast da coluna JSON para texto e busca
+		Filter("devices", "cs", string(filterJSON)).
 		ExecuteTo(&results)
 
 	if err != nil {
-		return "", fmt.Errorf("erro na requisição à API do Supabase: %v", err)
+		return "", fmt.Errorf("erro ao buscar usuário pelo DevEUI: %w", err)
 	}
 
 	if len(results) == 0 {
-		return "", fmt.Errorf("nenhum produtor encontrado com o sensor: %s", devEUI)
+		return "", fmt.Errorf(
+			"nenhum produtor encontrado com o sensor: %s",
+			devEUI,
+		)
+	}
+
+	if len(results) > 1 {
+		return "", fmt.Errorf(
+			"mais de um produtor encontrado para o sensor: %s",
+			devEUI,
+		)
 	}
 
 	return results[0].UserId, nil
