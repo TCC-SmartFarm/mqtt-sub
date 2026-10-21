@@ -169,51 +169,104 @@ func (eb *EventBus) publishToBus(payload []byte, userId string, deviceType strin
 }
 
 // passe o pool de conexão (db *sql.DB) como argumento. Isso salva muita memória e CPU!
-func findUserId(client *supabase.Client, devEUI string, devAddr string) (string, error) {
-	// Estrutura para receber o JSON de resposta da API
-	var results []struct {
-		UserId string `json:"userId"`
-	}
-	devEUI = strings.TrimSpace(devEUI)
-	if devEUI == "" {
-		return "", fmt.Errorf("DevEUI vazio")
-	}
+// func findUserId(client *supabase.Client, devEUI string, devAddr string) (string, error) {
+// 	// Estrutura para receber o JSON de resposta da API
+// 	var results []struct {
+// 		UserId string `json:"userId"`
+// 	}
+// 	devEUI = strings.TrimSpace(devEUI)
+// 	if devEUI == "" {
+// 		return "", fmt.Errorf("DevEUI vazio")
+// 	}
 
-	// O filtro precisa corresponder à estrutura JSON armazenada.
-	// Exemplo: [{"devEUI":"5e76ce4fd99eefe3"}]
-	filterJSON, err := json.Marshal([]map[string]string{
-		{"devEUI": devEUI},
-	})
-	if err != nil {
-		return "", fmt.Errorf("erro ao montar filtro do dispositivo: %w", err)
-	}
+// 	// O filtro precisa corresponder à estrutura JSON armazenada.
+// 	// Exemplo: [{"devEUI":"5e76ce4fd99eefe3"}]
+// 	filterJSON, err := json.Marshal([]map[string]string{
+// 		{"devEUI": devEUI},
+// 	})
+// 	if err != nil {
+// 		return "", fmt.Errorf("erro ao montar filtro do dispositivo: %w", err)
+// 	}
 
-	_, err = client.From("users").
-		Select("userId", "exact", false).
-		Filter("devices", "cs", string(filterJSON)).
-		ExecuteTo(&results)
+// 	_, err = client.From("users").
+// 		Select("userId", "exact", false).
+// 		Filter("devices", "cs", string(filterJSON)).
+// 		ExecuteTo(&results)
 
-	if err != nil {
-		return "", fmt.Errorf("erro ao buscar usuário pelo DevEUI: %w", err)
-	}
+// 	if err != nil {
+// 		return "", fmt.Errorf("erro ao buscar usuário pelo DevEUI: %w", err)
+// 	}
 
-	if len(results) == 0 {
-		return "", fmt.Errorf(
-			"nenhum produtor encontrado com o sensor: %s",
-			devEUI,
-		)
-	}
+// 	if len(results) == 0 {
+// 		return "", fmt.Errorf(
+// 			"nenhum produtor encontrado com o sensor: %s",
+// 			devEUI,
+// 		)
+// 	}
 
-	if len(results) > 1 {
-		return "", fmt.Errorf(
-			"mais de um produtor encontrado para o sensor: %s",
-			devEUI,
-		)
-	}
+// 	if len(results) > 1 {
+// 		return "", fmt.Errorf(
+// 			"mais de um produtor encontrado para o sensor: %s",
+// 			devEUI,
+// 		)
+// 	}
 
-	return results[0].UserId, nil
+// 	return results[0].UserId, nil
 
 
+// }
+
+func findUserId(client *supabase.Client, devEUI string) (string, error) {
+    devEUI = strings.TrimSpace(devEUI)
+
+    if devEUI == "" {
+        return "", fmt.Errorf("DevEUI vazio")
+    }
+
+    // Executa a função PostgreSQL no Supabase.
+    response := client.Rpc(
+        "find_user_id_by_deveui",
+        "",
+        map[string]interface{}{
+            "p_dev_eui": devEUI,
+        },
+    )
+
+    var results []struct {
+        UserId string `json:"userId"`
+    }
+
+    if err := json.Unmarshal([]byte(response), &results); err != nil {
+        return "", fmt.Errorf(
+            "erro ao interpretar resposta da busca do DevEUI %s: %w; resposta: %s",
+            devEUI,
+            err,
+            response,
+        )
+    }
+
+    if len(results) == 0 {
+        return "", fmt.Errorf(
+            "nenhum usuário encontrado para o DevEUI: %s",
+            devEUI,
+        )
+    }
+
+    if len(results) > 1 {
+        return "", fmt.Errorf(
+            "mais de um usuário encontrado para o DevEUI: %s",
+            devEUI,
+        )
+    }
+
+    if strings.TrimSpace(results[0].UserId) == "" {
+        return "", fmt.Errorf(
+            "userId vazio para o DevEUI: %s",
+            devEUI,
+        )
+    }
+
+    return results[0].UserId, nil
 }
 
 func main() {
@@ -290,11 +343,30 @@ func main() {
 					deviceName = devEUI
 				}
 
-				userId, err := findUserId(db,devEUI, devAddr)
+				userId, err := findUserId(db, devEUI)
 				if err != nil {
-					log.Printf("Erro ao buscar usuário para DevEUI (%s): %v", devEUI, err)
-					userId = applicationId // fallback para evitar falha completa
+					log.Printf(
+						"[ERRO] Falha ao identificar usuário: DevEUI=%s: %v",
+						devEUI,
+						err,
+					)
+					return
 				}
+				if strings.TrimSpace(userId) == "" {
+					log.Printf(
+						"[ERRO] userId vazio para o sensor DevEUI=%s. Mensagem descartada.",
+						devEUI,
+					)
+					return
+				}
+
+				log.Printf(
+					"[IDENTIDADE] userId=%q | applicationId=%q | devEUI=%q",
+					userId,
+					applicationId,
+					devEUI,
+				)
+
 
 				// Executa a decodificação da string Hexadecimal
 				decodedData, err := decodeChirpStackPayload(envelope.Data)
@@ -305,6 +377,13 @@ func main() {
 
 				fmt.Printf("\n[MQTT SUCESSO] Recebido de DevEUI: %s", devEUI)
 				fmt.Printf("\n[MQTT] Processando Sensor(%s): %s", devAddr, applicationId)
+
+				log.Printf(
+					"[IDENTIDADE] userId=%q | applicationId=%q | devEUI=%q",
+					userId,
+					applicationId,
+					devEUI,
+				)
 
 				custom := CustomPayload{
 					UserId: userId, // Aqui o UserId é o nome da fazenda (proveniente do postgrees)
