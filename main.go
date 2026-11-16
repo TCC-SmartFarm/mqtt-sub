@@ -56,6 +56,39 @@ type ChirpStackPackage struct {
 	} `json:"deviceInfo"`
 	DevAddr string `json:"devAddr"`
 	Data    string `json:"data"` // Aqui vem o Base64: "AAABggn2F3ARlB9AJxAB"
+	Time    string `json:"time"` // Horário de recepção do uplink (RFC3339), preenchido pelo ChirpStack
+}
+
+// Qualquer timestamp anterior a esta data é de sensor NÃO configurado
+// (ele manda segundos desde o boot, ex.: 386 -> 1970-01-01).
+const minValidDeviceTimestamp = 1735689600 // 2025-01-01T00:00:00Z
+
+// Tolerância para timestamp no futuro (mesma regra do irrigacao-mss, que
+// descarta leituras com mais de 5 min à frente do relógio do servidor).
+const maxFutureSkew = 5 * time.Minute
+
+// receptionTimestamp é o horário em que o ChirpStack recebeu o uplink;
+// na falta dele, o horário do servidor.
+func receptionTimestamp(chirpStackTime string) int64 {
+	if t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(chirpStackTime)); err == nil {
+		return t.Unix()
+	}
+	return time.Now().Unix()
+}
+
+// resolveTimestamp define o timestamp OFICIAL da leitura (o mesmo que vai para o
+// Redis e para o InfluxDB):
+//   - sensor configurado -> usa o timestamp do próprio sensor (confiável);
+//   - sensor não configurado (ou timestamp no futuro) -> usa o horário de recepção.
+// Antes, o timestamp de sensor não configurado ia direto para o Influx em 1970,
+// e as consultas de -30d voltavam vazias.
+func resolveTimestamp(deviceTimestamp int64, chirpStackTime string) (int64, string) {
+	reception := receptionTimestamp(chirpStackTime)
+	if deviceTimestamp >= minValidDeviceTimestamp &&
+		deviceTimestamp <= reception+int64(maxFutureSkew/time.Second) {
+		return deviceTimestamp, "sensor"
+	}
+	return reception, "recepcao"
 }
 
 // Decodifica a string Base64 e aplica os fatores de escala
@@ -119,6 +152,21 @@ func setupEventBus() *EventBus {
         log.Fatalf("Falha ao abrir canal no RabbitMQ: %v", err)
     }
 
+    // Garante a exchange mesmo que o config-rabbit ainda não tenha rodado.
+    // Publicar numa exchange inexistente FECHA o canal e todas as mensagens
+    // seguintes eram perdidas em silêncio.
+    if err := ch.ExchangeDeclare("telemetria_exchange", "topic", true, false, false, false, nil); err != nil {
+        log.Fatalf("Falha ao declarar telemetria_exchange: %v", err)
+    }
+
+    // Se a conexão/canal cair, encerra o processo para o Docker reiniciar
+    // (antes o serviço continuava vivo publicando num canal morto).
+    go func() {
+        if e := <-ch.NotifyClose(make(chan *amqp.Error, 1)); e != nil {
+            log.Fatalf("Canal do RabbitMQ fechado: %v", e)
+        }
+    }()
+
     fmt.Println("Conectado com sucesso ao RabbitMQ!")
     return &EventBus{conn: conn, channel: ch}
 }
@@ -144,25 +192,11 @@ func (eb *EventBus) publishToBus(payload []byte, userId string, deviceType strin
             Timestamp:   time.Now(),
         })
 
+    // A fila_influx e a fila_cache estão ligadas à exchange por "device.#".
+    // A publicação direta extra na fila_influx foi removida: ela fazia cada
+    // leitura chegar DUAS vezes no influx-connector.
     if err != nil {
         log.Printf("Erro ao publicar na telemetria_exchange: %v", err)
-    }
-
-    // Publicação para o Influx
-    // Mas o ideal no TCC é o Influx também ser um Subscriber da Exchange!
-    err = eb.channel.PublishWithContext(ctx,
-        "",              // Default Exchange
-        "fila_influx",   // Nome da fila direto
-        false,
-        false,
-        amqp.Publishing{
-            ContentType: "application/json",
-            Body:        payload,
-            Timestamp:   time.Now(),
-        })
-
-    if err != nil {
-        log.Printf("Erro ao publicar para o Influx: %v", err)
     } else {
         fmt.Printf("[EVENT BUS] Mensagem roteada: %s\n", routingKey)
     }
@@ -298,7 +332,7 @@ func main() {
     
     db, erro := supabase.NewClient(supabaseURL, supabaseKey, nil)
     if erro != nil {
-        fmt.Printf("falha ao inicializar o cliente do Supabase: %v", erro)
+        log.Fatalf("falha ao inicializar o cliente do Supabase: %v", erro) // antes seguia com db nil e dava panic na 1ª mensagem
     }
     fmt.Println("Cliente Supabase inicializado com sucesso!")
 
@@ -318,7 +352,10 @@ func main() {
 			if len(parts) >= 4 {
 				applicationId := parts[1] // Application tá no tópico (nome da fazenda/ id da fazenda/ do usuario)
 				deviceType := parts[2] // tipo do dispositivo (device)
-				devEUI := parts[3] // id do dispositivo (device01, device02, etc)
+				devEUIRaw := parts[3] // id do dispositivo como veio no tópico (usado na busca do Supabase)
+				// devEUI normalizado em minúsculas: é a mesma forma usada nas tags do Influx,
+				// nas chaves do Redis e nas rotas da API (que também normalizam).
+				devEUI := strings.ToLower(strings.TrimSpace(devEUIRaw))
 			
 
 				// Faz o parse do envelope estruturado do ChirpStack
@@ -343,7 +380,7 @@ func main() {
 					deviceName = devEUI
 				}
 
-				userId, err := findUserId(db, devEUI)
+				userId, err := findUserId(db, devEUIRaw)
 				if err != nil {
 					log.Printf(
 						"[ERRO] Falha ao identificar usuário: DevEUI=%s: %v",
@@ -373,6 +410,14 @@ func main() {
 				if err != nil {
 					log.Printf("Erro ao decodificar hexadecimal (%s): %v", envelope.Data, err)
 					return
+				}
+
+				// Usa o timestamp do sensor se ele estiver configurado; senão, o de recepção.
+				deviceTimestamp := decodedData.Timestamp
+				officialTimestamp, source := resolveTimestamp(deviceTimestamp, envelope.Time)
+				decodedData.Timestamp = officialTimestamp
+				if source == "recepcao" {
+					log.Printf("[TIMESTAMP] DevEUI=%s com timestamp inválido (%d), sensor provavelmente não configurado; usando recepção=%d", devEUI, deviceTimestamp, officialTimestamp)
 				}
 
 				fmt.Printf("\n[MQTT SUCESSO] Recebido de DevEUI: %s", devEUI)
